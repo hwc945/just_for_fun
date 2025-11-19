@@ -177,6 +177,7 @@ class VideoPlayerItem extends StatefulWidget {
 class _VideoPlayerItemState extends State<VideoPlayerItem> {
   late VideoPlayerController _controller;
   late Future<void> _initializeVideoPlayerFuture;
+  bool _isFastForwarding = false;
 
   @override
   void initState() {
@@ -202,24 +203,104 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
     super.dispose();
   }
 
+  void _togglePlay() {
+    if (!_controller.value.isInitialized) return;
+    setState(() {
+      if (_controller.value.isPlaying) {
+        _controller.pause();
+      } else {
+        _controller.play();
+      }
+    });
+  }
+
+  void _startFastForward(LongPressStartDetails details) {
+    if (!_controller.value.isInitialized) return;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final dx = details.globalPosition.dx;
+    // 判断是否在屏幕两侧 (例如左边 20% 或右边 20%)
+    if (dx < screenWidth * 0.2 || dx > screenWidth * 0.8) {
+      setState(() {
+        _isFastForwarding = true;
+      });
+      _controller.setPlaybackSpeed(2.0);
+    }
+  }
+
+  void _stopFastForward(LongPressEndDetails details) {
+    if (!_controller.value.isInitialized) return;
+    if (_isFastForwarding) {
+      setState(() {
+        _isFastForwarding = false;
+      });
+      _controller.setPlaybackSpeed(1.0);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: FutureBuilder(
-        future: _initializeVideoPlayerFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.done) {
-            if (snapshot.hasError) {
-              return Center(child: Text('视频加载失败: ${snapshot.error}'));
-            }
-            return AspectRatio(
-              aspectRatio: _controller.value.aspectRatio,
-              child: VideoPlayer(_controller),
-            );
-          } else {
-            return const Center(child: CircularProgressIndicator(color: Colors.white));
-          }
-        },
+    return GestureDetector(
+      onTap: _togglePlay,
+      onLongPressStart: _startFastForward,
+      onLongPressEnd: _stopFastForward,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Center(
+            child: FutureBuilder(
+              future: _initializeVideoPlayerFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.done) {
+                  if (snapshot.hasError) {
+                    return Center(child: Text('视频加载失败: ${snapshot.error}'));
+                  }
+                  return AspectRatio(
+                    aspectRatio: _controller.value.aspectRatio,
+                    child: VideoPlayer(_controller),
+                  );
+                } else {
+                  return const Center(child: CircularProgressIndicator(color: Colors.white));
+                }
+              },
+            ),
+          ),
+          // 暂停时显示播放图标
+          if (_controller.value.isInitialized && !_controller.value.isPlaying)
+            const Icon(
+              Icons.play_arrow,
+              size: 60,
+              color: Colors.white54,
+            ),
+          // 倍速播放提示
+          if (_isFastForwarding)
+            Positioned(
+              top: 50,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('2x 倍速播放中', style: TextStyle(color: Colors.white)),
+              ),
+            ),
+          // 进度条
+          if (_controller.value.isInitialized)
+            Positioned(
+              bottom: 10,
+              left: 0,
+              right: 0,
+              child: VideoProgressIndicator(
+                _controller,
+                allowScrubbing: true,
+                colors: const VideoProgressColors(
+                  playedColor: Colors.white,
+                  bufferedColor: Colors.white24,
+                  backgroundColor: Colors.grey,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
