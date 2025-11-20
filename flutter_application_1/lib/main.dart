@@ -34,6 +34,7 @@ class VideoFeedScreen extends StatefulWidget {
 
 class _VideoFeedScreenState extends State<VideoFeedScreen> {
   final List<String> _videoUrls = [];
+  final Map<int, VideoPlayerController> _controllers = {};
   late PageController _pageController;
   bool _isLoading = false;
 
@@ -71,6 +72,10 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
             setState(() {
               _videoUrls.add(videoUrl);
             });
+            // 如果是前两个视频，立即初始化
+            if (_videoUrls.length <= 2) {
+              _initializeControllerAtIndex(_videoUrls.length - 1);
+            }
           }
         }
       }
@@ -79,9 +84,56 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
     }
   }
 
+  void _initializeControllerAtIndex(int index) {
+    if (_videoUrls.length <= index || index < 0) return;
+    if (_controllers.containsKey(index)) return;
+
+    final controller = VideoPlayerController.networkUrl(Uri.parse(_videoUrls[index]));
+    _controllers[index] = controller;
+
+    controller.initialize().then((_) {
+      if (mounted) {
+        setState(() {});
+        // 如果是当前页面，自动播放
+        if (_pageController.hasClients && _pageController.page?.round() == index) {
+          controller.play();
+        }
+      }
+    }).catchError((e) {
+      debugPrint("Error initializing video $index: $e");
+      if (mounted) {
+        _handleVideoError(index);
+      }
+    });
+  }
+
+  void _handleVideoError(int index) {
+    // 移除错误的控制器
+    _disposeControllerAtIndex(index);
+    // 如果是当前展示的视频出错，自动跳到下一个
+    if (_pageController.hasClients && _pageController.page?.round() == index) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _pageController.nextPage(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+  }
+
+  void _disposeControllerAtIndex(int index) {
+    if (_controllers.containsKey(index)) {
+      _controllers[index]?.dispose();
+      _controllers.remove(index);
+    }
+  }
+
   @override
   void dispose() {
     _pageController.dispose();
+    _controllers.forEach((_, controller) => controller.dispose());
     super.dispose();
   }
 
@@ -109,15 +161,26 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
                   scrollDirection: Axis.vertical,
                   itemCount: _videoUrls.length,
                   onPageChanged: (index) {
-                    // 预加载更多视频
+                    // 1. 预加载更多视频 URL
                     if (index >= _videoUrls.length - 2) {
                       _fetchNewVideo();
                     }
+                    
+                    // 2. 视频控制器管理 (预加载下一个，释放上上个)
+                    _initializeControllerAtIndex(index + 1); // 预加载下一个
+                    if (index > 0) _controllers[index]?.play(); // 播放当前
+                    if (index + 1 < _videoUrls.length) _controllers[index + 1]?.pause(); // 暂停下一个
+                    if (index > 0) _controllers[index - 1]?.pause(); // 暂停上一个
+                    
+                    _disposeControllerAtIndex(index - 2); // 释放之前的资源
                   },
                   itemBuilder: (context, index) {
+                    if (!_controllers.containsKey(index)) {
+                      _initializeControllerAtIndex(index);
+                    }
                     return VideoPlayerItem(
-                      key: ValueKey(_videoUrls[index]), // 使用 ValueKey
-                      videoUrl: _videoUrls[index],
+                      key: ValueKey(_videoUrls[index]),
+                      controller: _controllers[index]!,
                       onVideoFinished: _onVideoFinished,
                     );
                   },
@@ -161,12 +224,12 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
 
 // 单个视频播放器 Widget
 class VideoPlayerItem extends StatefulWidget {
-  final String videoUrl;
+  final VideoPlayerController controller;
   final VoidCallback onVideoFinished;
 
   const VideoPlayerItem({
     required Key key,
-    required this.videoUrl,
+    required this.controller,
     required this.onVideoFinished,
   }) : super(key: key);
 
@@ -175,47 +238,59 @@ class VideoPlayerItem extends StatefulWidget {
 }
 
 class _VideoPlayerItemState extends State<VideoPlayerItem> {
-  late VideoPlayerController _controller;
-  late Future<void> _initializeVideoPlayerFuture;
   bool _isFastForwarding = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
-    _initializeVideoPlayerFuture = _controller.initialize().then((_) {
-      // 初始化成功后，开始播放
-      _controller.play();
-      setState(() {});
-    });
+    widget.controller.addListener(_videoListener);
+    // 如果已经初始化完成，直接播放
+    if (widget.controller.value.isInitialized) {
+      widget.controller.play();
+    }
+  }
 
-    // 监听视频播放，结束后调用回调
-    _controller.addListener(() {
-      if (_controller.value.position >= _controller.value.duration && !_controller.value.isLooping) {
-        widget.onVideoFinished();
+  @override
+  void didUpdateWidget(VideoPlayerItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_videoListener);
+      widget.controller.addListener(_videoListener);
+      if (widget.controller.value.isInitialized) {
+        widget.controller.play();
       }
-    });
+    }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    widget.controller.removeListener(_videoListener);
+    // 注意：控制器由父组件管理，这里不 dispose
     super.dispose();
   }
 
+  void _videoListener() {
+    if (widget.controller.value.position >= widget.controller.value.duration &&
+        !widget.controller.value.isLooping &&
+        widget.controller.value.duration != Duration.zero) {
+      widget.onVideoFinished();
+    }
+    setState(() {}); // 更新 UI (进度条等)
+  }
+
   void _togglePlay() {
-    if (!_controller.value.isInitialized) return;
+    if (!widget.controller.value.isInitialized) return;
     setState(() {
-      if (_controller.value.isPlaying) {
-        _controller.pause();
+      if (widget.controller.value.isPlaying) {
+        widget.controller.pause();
       } else {
-        _controller.play();
+        widget.controller.play();
       }
     });
   }
 
   void _startFastForward(LongPressStartDetails details) {
-    if (!_controller.value.isInitialized) return;
+    if (!widget.controller.value.isInitialized) return;
     final screenWidth = MediaQuery.of(context).size.width;
     final dx = details.globalPosition.dx;
     // 判断是否在屏幕两侧 (例如左边 20% 或右边 20%)
@@ -223,17 +298,17 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
       setState(() {
         _isFastForwarding = true;
       });
-      _controller.setPlaybackSpeed(2.0);
+      widget.controller.setPlaybackSpeed(2.0);
     }
   }
 
   void _stopFastForward(LongPressEndDetails details) {
-    if (!_controller.value.isInitialized) return;
+    if (!widget.controller.value.isInitialized) return;
     if (_isFastForwarding) {
       setState(() {
         _isFastForwarding = false;
       });
-      _controller.setPlaybackSpeed(1.0);
+      widget.controller.setPlaybackSpeed(1.0);
     }
   }
 
@@ -247,25 +322,15 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
         alignment: Alignment.center,
         children: [
           Center(
-            child: FutureBuilder(
-              future: _initializeVideoPlayerFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.done) {
-                  if (snapshot.hasError) {
-                    return Center(child: Text('视频加载失败: ${snapshot.error}'));
-                  }
-                  return AspectRatio(
-                    aspectRatio: _controller.value.aspectRatio,
-                    child: VideoPlayer(_controller),
-                  );
-                } else {
-                  return const Center(child: CircularProgressIndicator(color: Colors.white));
-                }
-              },
-            ),
+            child: widget.controller.value.isInitialized
+                ? AspectRatio(
+                    aspectRatio: widget.controller.value.aspectRatio,
+                    child: VideoPlayer(widget.controller),
+                  )
+                : const CircularProgressIndicator(color: Colors.white),
           ),
           // 暂停时显示播放图标
-          if (_controller.value.isInitialized && !_controller.value.isPlaying)
+          if (widget.controller.value.isInitialized && !widget.controller.value.isPlaying)
             const Icon(
               Icons.play_arrow,
               size: 60,
@@ -285,13 +350,13 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
               ),
             ),
           // 进度条
-          if (_controller.value.isInitialized)
+          if (widget.controller.value.isInitialized)
             Positioned(
               bottom: 10,
               left: 0,
               right: 0,
               child: VideoProgressIndicator(
-                _controller,
+                widget.controller,
                 allowScrubbing: true,
                 colors: const VideoProgressColors(
                   playedColor: Colors.white,
