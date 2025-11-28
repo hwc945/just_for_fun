@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:http/http.dart' as http;
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 void main() {
   runApp(const VideoApp());
@@ -37,12 +38,38 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
   final Map<int, VideoPlayerController> _controllers = {};
   late PageController _pageController;
   bool _isLoading = false;
+  int _currentIndex = 0;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController();
     _loadInitialVideos();
+  }
+
+  void _wakelockListener() {
+    final controller = _controllers[_currentIndex];
+    if (controller != null && controller.value.isPlaying) {
+      WakelockPlus.enable();
+    } else {
+      WakelockPlus.disable();
+    }
+  }
+
+  void _attachWakelockListener(int index) {
+    final controller = _controllers[index];
+    if (controller != null) {
+      controller.addListener(_wakelockListener);
+      // 立即检查一次状态
+      _wakelockListener();
+    }
+  }
+
+  void _detachWakelockListener(int index) {
+    final controller = _controllers[index];
+    if (controller != null) {
+      controller.removeListener(_wakelockListener);
+    }
   }
 
   Future<void> _loadInitialVideos() async {
@@ -97,6 +124,10 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
         // 如果是当前页面，自动播放
         if (_pageController.hasClients && _pageController.page?.round() == index) {
           controller.play();
+          // 确保监听器已附加（如果是当前页）
+          if (index == _currentIndex) {
+             _attachWakelockListener(index);
+          }
         }
       }
     }).catchError((e) {
@@ -125,6 +156,10 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
 
   void _disposeControllerAtIndex(int index) {
     if (_controllers.containsKey(index)) {
+      // 如果正在监听这个控制器，先移除监听
+      if (index == _currentIndex) {
+        _detachWakelockListener(index);
+      }
       _controllers[index]?.dispose();
       _controllers.remove(index);
     }
@@ -132,6 +167,8 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
 
   @override
   void dispose() {
+    _detachWakelockListener(_currentIndex);
+    WakelockPlus.disable();
     _pageController.dispose();
     _controllers.forEach((_, controller) => controller.dispose());
     super.dispose();
@@ -161,6 +198,11 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
                   scrollDirection: Axis.vertical,
                   itemCount: _videoUrls.length,
                   onPageChanged: (index) {
+                    // 切换监听器
+                    _detachWakelockListener(_currentIndex);
+                    _currentIndex = index;
+                    _attachWakelockListener(_currentIndex);
+
                     // 1. 预加载更多视频 URL
                     if (index >= _videoUrls.length - 2) {
                       _fetchNewVideo();
@@ -239,6 +281,7 @@ class VideoPlayerItem extends StatefulWidget {
 
 class _VideoPlayerItemState extends State<VideoPlayerItem> {
   bool _isFastForwarding = false;
+  bool _hasTriggeredFinish = false;
 
   @override
   void initState() {
@@ -256,6 +299,7 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_videoListener);
       widget.controller.addListener(_videoListener);
+      _hasTriggeredFinish = false; // 重置标志位
       if (widget.controller.value.isInitialized) {
         widget.controller.play();
       }
@@ -270,10 +314,19 @@ class _VideoPlayerItemState extends State<VideoPlayerItem> {
   }
 
   void _videoListener() {
-    if (widget.controller.value.position >= widget.controller.value.duration &&
-        !widget.controller.value.isLooping &&
-        widget.controller.value.duration != Duration.zero) {
-      widget.onVideoFinished();
+    final value = widget.controller.value;
+    if (value.position >= value.duration &&
+        !value.isLooping &&
+        value.duration != Duration.zero) {
+      if (!_hasTriggeredFinish) {
+        _hasTriggeredFinish = true;
+        widget.onVideoFinished();
+      }
+    } else {
+      // 如果未结束，重置标志位
+      if (value.position < value.duration && _hasTriggeredFinish) {
+        _hasTriggeredFinish = false;
+      }
     }
     setState(() {}); // 更新 UI (进度条等)
   }

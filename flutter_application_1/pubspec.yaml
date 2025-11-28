@@ -16,6 +16,7 @@ dependencies:
   provider: ^6.0.0
   video_player: ^2.8.6 # 或者最新版本
   http: ^1.1.0
+  wakelock_plus: ^1.1.0
 
 dev_dependencies:
   flutter_test:
