@@ -39,6 +39,10 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
   late PageController _pageController;
   bool _isLoading = false;
   int _currentIndex = 0;
+  int _currentTabIndex = 0; // 当前选中的底部 Tab 索引
+
+  // 1: 随机视频 (主页), 2: 巴旦木公主 (我的)
+  int _currentVideoSource = 1; 
 
   @override
   void initState() {
@@ -48,7 +52,7 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
   }
 
   void _wakelockListener() {
-    final controller = _controllers[_currentIndex];
+    final controller = _controllers[_currentIndex]; 
     if (controller != null && controller.value.isPlaying) {
       WakelockPlus.enable();
     } else {
@@ -90,7 +94,19 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
 
   Future<void> _fetchNewVideo() async {
     try {
-      final response = await http.get(Uri.parse('https://api.yujn.cn/api/zzxjj.php?type=json'));
+      if (_currentVideoSource == 2) {
+        // 巴旦木公主博主视频的占位
+        // 实际开发中需要对应的后端 API 或者爬虫接口来获取对应主页的所有视频
+        // 目前返回一些占位视频 URL 或者依然获取随机视频进行演示
+        // 由于没有真实 API，此处可以提示用户，或者继续请求测试视频
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('正在获取巴旦木公主的视频，此处使用测试接口占位...')),
+          );
+        }
+      }
+
+      final response = await http.get(Uri.parse('https://www.douyin.com/user/MS4wLjABAAAADw1dDJd4zddv0m8KWQB7ztFV0Nt8QzIK7dpFvbsrXss?from_tab_name=main&modal_id=7457451823201291578'));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final String? videoUrl = data['data'];
@@ -190,43 +206,12 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 视频播放器
-          _videoUrls.isEmpty
-              ? const Center(child: CircularProgressIndicator(color: Colors.white))
-              : PageView.builder(
-                  controller: _pageController,
-                  scrollDirection: Axis.vertical,
-                  itemCount: _videoUrls.length,
-                  onPageChanged: (index) {
-                    // 切换监听器
-                    _detachWakelockListener(_currentIndex);
-                    _currentIndex = index;
-                    _attachWakelockListener(_currentIndex);
-
-                    // 1. 预加载更多视频 URL
-                    if (index >= _videoUrls.length - 2) {
-                      _fetchNewVideo();
-                    }
-                    
-                    // 2. 视频控制器管理 (预加载下一个，释放上上个)
-                    _initializeControllerAtIndex(index + 1); // 预加载下一个
-                    if (index > 0) _controllers[index]?.play(); // 播放当前
-                    if (index + 1 < _videoUrls.length) _controllers[index + 1]?.pause(); // 暂停下一个
-                    if (index > 0) _controllers[index - 1]?.pause(); // 暂停上一个
-                    
-                    _disposeControllerAtIndex(index - 2); // 释放之前的资源
-                  },
-                  itemBuilder: (context, index) {
-                    if (!_controllers.containsKey(index)) {
-                      _initializeControllerAtIndex(index);
-                    }
-                    return VideoPlayerItem(
-                      key: ValueKey(_videoUrls[index]),
-                      controller: _controllers[index]!,
-                      onVideoFinished: _onVideoFinished,
-                    );
-                  },
-                ),
+          // 页面内容
+          if (_currentTabIndex == 0)
+            _buildVideoFeed()
+          else
+            _buildProfileScreen(),
+          
           // 底部导航栏
           _buildBottomNavBar(),
         ],
@@ -234,28 +219,142 @@ class _VideoFeedScreenState extends State<VideoFeedScreen> {
     );
   }
 
+  Widget _buildVideoFeed() {
+    return _videoUrls.isEmpty
+        ? const Center(child: CircularProgressIndicator(color: Colors.white))
+        : PageView.builder(
+            controller: _pageController,
+            scrollDirection: Axis.vertical,
+            itemCount: _videoUrls.length,
+            onPageChanged: (index) {
+              // 切换监听器
+              _detachWakelockListener(_currentIndex);
+              _currentIndex = index;
+              _attachWakelockListener(_currentIndex);
+
+              // 1. 预加载更多视频 URL
+              if (index >= _videoUrls.length - 2) {
+                _fetchNewVideo();
+              }
+              
+              // 2. 视频控制器管理 (预加载下一个，释放上上个)
+              _initializeControllerAtIndex(index + 1); // 预加载下一个
+              if (index > 0) _controllers[index]?.play(); // 播放当前
+              if (index + 1 < _videoUrls.length) _controllers[index + 1]?.pause(); // 暂停下一个
+              if (index > 0) _controllers[index - 1]?.pause(); // 暂停上一个
+              
+              _disposeControllerAtIndex(index - 2); // 释放之前的资源
+            },
+            itemBuilder: (context, index) {
+              if (!_controllers.containsKey(index)) {
+                _initializeControllerAtIndex(index);
+              }
+              return VideoPlayerItem(
+                key: ValueKey(_videoUrls[index]),
+                controller: _controllers[index]!,
+                onVideoFinished: _onVideoFinished,
+              );
+            },
+          );
+  }
+
+  void _switchVideoSource(int sourceId) {
+    setState(() {
+      _currentTabIndex = 0; // 切换回主页播放
+      _currentVideoSource = sourceId;
+      _videoUrls.clear();
+      _controllers.forEach((_, controller) => controller.dispose());
+      _controllers.clear();
+      _isLoading = false;
+      _currentIndex = 0;
+      // 重新实例化控制器避免越界
+      _pageController.dispose();
+      _pageController = PageController();
+    });
+    _loadInitialVideos();
+  }
+
+  Widget _buildProfileScreen() {
+    return Container(
+      color: Colors.black,
+      width: double.infinity,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const CircleAvatar(
+            radius: 50,
+            backgroundImage: NetworkImage('https://p11.douyinpic.com/aweme/1080x1080/aweme-avatar/tos-cn-avt-0015_939a2b53b94b0d01d14690f05f778f9f.jpeg?from=116350172'),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            '我的主页',
+            style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 40),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.pinkAccent,
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+            ),
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已切换到"巴旦木公主"视频列表')),
+              );
+              _switchVideoSource(2);
+            },
+            child: const Text(
+              '看巴旦木公主',
+              style: TextStyle(fontSize: 18, color: Colors.white),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
   // 构建底部导航栏
   Widget _buildBottomNavBar() {
-    return const Align(
+    return Align(
       alignment: Alignment.bottomCenter,
-      child: Padding(
-        padding: EdgeInsets.only(bottom: 30.0),
+      child: Container(
+        padding: const EdgeInsets.only(bottom: 20.0, top: 10),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+          ),
+        ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.home, color: Colors.white, size: 30),
-                Text('主页', style: TextStyle(color: Colors.white)),
-              ],
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  _currentTabIndex = 0;
+                });
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.home, color: _currentTabIndex == 0 ? Colors.white : Colors.white54, size: 30),
+                  Text('主页', style: TextStyle(color: _currentTabIndex == 0 ? Colors.white : Colors.white54)),
+                ],
+              ),
             ),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.person, color: Colors.white, size: 30),
-                Text('我的', style: TextStyle(color: Colors.white)),
-              ],
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  _currentTabIndex = 1;
+                });
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.person, color: _currentTabIndex == 1 ? Colors.white : Colors.white54, size: 30),
+                  Text('我的', style: TextStyle(color: _currentTabIndex == 1 ? Colors.white : Colors.white54)),
+                ],
+              ),
             ),
           ],
         ),
